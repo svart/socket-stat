@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use std::io;
 
 use netlink_packet_sock_diag::{
     constants::*,
@@ -10,10 +11,10 @@ use netlink_packet_sock_diag::{
 };
 use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr};
 
-fn main() {
-    let mut socket = Socket::new(NETLINK_SOCK_DIAG).unwrap();
-    let _port_number = socket.bind_auto().unwrap().port_number();
-    socket.connect(&SocketAddr::new(0, 0)).unwrap();
+fn main() -> io::Result<()> {
+    let mut socket = Socket::new(NETLINK_SOCK_DIAG)?;
+    socket.bind_auto()?;
+    socket.connect(&SocketAddr::new(0, 0))?;
 
     let mut packet = NetlinkMessage {
         header: NetlinkHeader {
@@ -40,10 +41,8 @@ fn main() {
 
     packet.serialize(&mut buf[..]);
 
-    println!(">>> {:?}", packet);
     if let Err(e) = socket.send(&buf[..], 0) {
-        println!("SEND ERROR {}", e);
-        return;
+        panic!("Cannot send request: {}", e);
     }
 
     let mut receive_buffer = vec![0; 4096];
@@ -52,7 +51,6 @@ fn main() {
         loop {
             let bytes = &receive_buffer[offset..];
             let rx_packet = <NetlinkMessage<SockDiagMessage>>::deserialize(bytes).unwrap();
-            println!("<<< {:?}", rx_packet);
 
             match rx_packet.payload {
                 NetlinkPayload::Noop | NetlinkPayload::Ack(_) => {}
@@ -60,10 +58,14 @@ fn main() {
                     println!("{:#?}", response);
                 }
                 NetlinkPayload::Done => {
-                    println!("Done!");
-                    return;
+                    return Ok(());
                 }
-                NetlinkPayload::Error(_) | NetlinkPayload::Overrun(_) | _ => return,
+                NetlinkPayload::Error(e) => {
+                    return Err(e.to_io());
+                }
+                NetlinkPayload::Overrun(_) | _ => {
+                    return Err(io::Error::new(io::ErrorKind::Other, "unknown error"));
+                }
             }
 
             offset += rx_packet.header.length as usize;
@@ -73,4 +75,5 @@ fn main() {
             }
         }
     }
+    Ok(())
 }
