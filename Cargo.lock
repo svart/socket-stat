@@ -136,6 +136,7 @@ name = "socket-stats"
 version = "0.1.0"
 dependencies = [
  "netlink-packet-sock-diag",
+ "netlink-packet-utils 0.4.1",
  "netlink-sys",
 ]
 

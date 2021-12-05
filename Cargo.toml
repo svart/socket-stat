@@ -9,3 +9,4 @@ edition = "2021"
 [dependencies]
 netlink-packet-sock-diag = {path = "../netlink/netlink-packet-sock-diag", version = "0.2"}
 netlink-sys = {path = "../netlink/netlink-sys", version = "0.8"}
+netlink-packet-utils = {path = "../netlink/netlink-packet-utils", version = "0.4"}
