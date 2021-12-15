@@ -9,7 +9,7 @@ use netlink_packet_sock_diag::{
     NetlinkPayload,
     SockDiagMessage,
 };
-use netlink_packet_sock_diag::inet::nlas::Nla;
+use netlink_packet_sock_diag::inet::nlas::{Nla, TcpInfo};
 use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr};
 
 fn speed_human(speed: f64) -> String {
@@ -41,6 +41,23 @@ fn socket_state(state: u8) -> String {
         TCP_CLOSING => format!("closing"),
         _ => format!("unknown")
     }
+}
+
+
+fn tcp_info_handler(tcp: TcpInfo) {
+    print!(" cwnd: {}", tcp.snd_cwnd);
+
+    let rtt = tcp.rtt as f64 / 1000.;
+    let var_rtt = tcp.rttvar as f64 / 1000.;
+    print!(" rtt: {}/{}", rtt, var_rtt);
+
+    print!(" bytes_sent: {}", tcp.bytes_sent);
+    print!(" bytes_acked: {}", tcp.bytes_acked);
+    print!(" bytes_received: {}", tcp.bytes_received);
+
+    let send_bps = (tcp.snd_cwnd * tcp.snd_mss) as f64 * 8000000. / rtt;
+    print!(" send: {}", speed_human(send_bps));
+    print!(" delivery_rate: {}", speed_human(tcp.delivery_rate as f64 * 8.));
 }
 
 fn main() -> io::Result<()> {
@@ -88,31 +105,19 @@ fn main() -> io::Result<()> {
             match rx_packet.payload {
                 NetlinkPayload::Noop | NetlinkPayload::Ack(_) => {}
                 NetlinkPayload::InnerMessage(SockDiagMessage::InetResponse(response)) => {
-                    // println!("{:#?}", response);
                     let src_addr = response.header.socket_id.source_address;
                     let src_port = response.header.socket_id.source_port;
                     let dst_addr = response.header.socket_id.destination_address;
                     let dst_port = response.header.socket_id.destination_port;
-                    let state = response.header.state;
-
                     print!("{}:{}-{}:{}", src_addr, src_port, dst_addr, dst_port);
+
+                    let state = response.header.state;
+                    print!(" {}", socket_state(state));
+
                     for nla in response.nlas {
                         match nla {
                             Nla::TcpInfo(tcp) => {
-                                print!(" {}", socket_state(state));
-                                print!(" cwnd: {}", tcp.snd_cwnd);
-
-                                let rtt = tcp.rtt as f64 / 1000.;
-                                let var_rtt = tcp.rttvar as f64 / 1000.;
-                                print!(" rtt: {}/{}", rtt, var_rtt);
-
-                                print!(" bytes_sent: {}", tcp.bytes_sent);
-                                print!(" bytes_acked: {}", tcp.bytes_acked);
-                                print!(" bytes_received: {}", tcp.bytes_received);
-
-                                let send_bps = (tcp.snd_cwnd * tcp.snd_mss) as f64 * 8000000. / rtt;
-                                print!(" send: {}", speed_human(send_bps));
-                                print!(" delivery_rate: {}", speed_human(tcp.delivery_rate as f64 * 8.));
+                                tcp_info_handler(tcp);
                             }
                             _ => continue,
                         }
