@@ -9,6 +9,7 @@ use netlink_packet_sock_diag::{
     NetlinkPayload,
     SockDiagMessage,
 };
+use netlink_packet_sock_diag::inet::InetResponse;
 use netlink_packet_sock_diag::inet::nlas::{Nla, TcpInfo};
 use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr};
 
@@ -59,7 +60,30 @@ fn tcp_info_handler(tcp: TcpInfo) {
     print!(" delivery_rate: {}", speed_human(tcp.delivery_rate as f64 * 8.));
 }
 
-fn prepare_request_buffer() -> Vec<u8> {
+fn process_netlink_responses(responses: Vec<Box<InetResponse>>) {
+    for response in responses {
+        let src_addr = response.header.socket_id.source_address;
+        let src_port = response.header.socket_id.source_port;
+        let dst_addr = response.header.socket_id.destination_address;
+        let dst_port = response.header.socket_id.destination_port;
+        print!("{}:{}-{}:{}", src_addr, src_port, dst_addr, dst_port);
+
+        let state = response.header.state;
+        print!(" {}", socket_state(state));
+
+        for nla in response.nlas {
+            match nla {
+                Nla::TcpInfo(tcp) => {
+                    tcp_info_handler(tcp);
+                }
+                _ => continue,
+            }
+        }
+        println!();
+    }
+}
+
+fn send_request(socket: &mut Socket, af: u8, proto: u8) -> io::Result<()>{
     let mut packet = NetlinkMessage {
         header: NetlinkHeader {
             flags: NLM_F_REQUEST | NLM_F_DUMP,
@@ -67,8 +91,8 @@ fn prepare_request_buffer() -> Vec<u8> {
             ..Default::default()
         },
         payload: SockDiagMessage::InetRequest(InetRequest {
-            family: AF_INET,
-            protocol: IPPROTO_TCP,
+            family: af,
+            protocol: proto,
             extensions: ExtensionFlags::all(),
             states: StateFlags::all(),
             socket_id: SocketId::new_v4(),
@@ -85,22 +109,15 @@ fn prepare_request_buffer() -> Vec<u8> {
     assert_eq!(buf.len(), packet.buffer_len());
 
     packet.serialize(&mut buf[..]);
-    buf
+
+    socket.send(&buf[..], 0)?;
+    Ok(())
 }
 
-fn main() -> io::Result<()> {
-    let mut socket = Socket::new(NETLINK_SOCK_DIAG)?;
-    socket.bind_auto()?;
-    socket.connect(&SocketAddr::new(0, 0))?;
-
-    let buf = prepare_request_buffer();
-
-    if let Err(e) = socket.send(&buf[..], 0) {
-        panic!("Cannot send request: {}", e);
-    }
-
+fn receive_response(socket: &Socket) -> io::Result<Vec<Box<InetResponse>>> {
     let mut receive_buffer = vec![0; 4096];
     let mut offset = 0;
+    let mut responses: Vec<Box<InetResponse>> = Vec::new();
     while let Ok(size) = socket.recv(&mut &mut receive_buffer[..], 0) {
         loop {
             let bytes = &receive_buffer[offset..];
@@ -109,27 +126,10 @@ fn main() -> io::Result<()> {
             match rx_packet.payload {
                 NetlinkPayload::Noop | NetlinkPayload::Ack(_) => {}
                 NetlinkPayload::InnerMessage(SockDiagMessage::InetResponse(response)) => {
-                    let src_addr = response.header.socket_id.source_address;
-                    let src_port = response.header.socket_id.source_port;
-                    let dst_addr = response.header.socket_id.destination_address;
-                    let dst_port = response.header.socket_id.destination_port;
-                    print!("{}:{}-{}:{}", src_addr, src_port, dst_addr, dst_port);
-
-                    let state = response.header.state;
-                    print!(" {}", socket_state(state));
-
-                    for nla in response.nlas {
-                        match nla {
-                            Nla::TcpInfo(tcp) => {
-                                tcp_info_handler(tcp);
-                            }
-                            _ => continue,
-                        }
-                    }
-                    println!();
+                    responses.push(response);
                 }
                 NetlinkPayload::Done => {
-                    return Ok(());
+                    return Ok(responses);
                 }
                 NetlinkPayload::Error(e) => {
                     return Err(e.to_io());
@@ -146,6 +146,21 @@ fn main() -> io::Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(responses)
+}
+
+fn main() -> io::Result<()> {
+    let mut socket = Socket::new(NETLINK_SOCK_DIAG)?;
+    socket.bind_auto()?;
+    socket.connect(&SocketAddr::new(0, 0))?;
+
+    send_request(&mut socket, AF_INET, IPPROTO_TCP)?;
+    match receive_response(&socket) {
+        Ok(resp) => {
+            process_netlink_responses(resp);
+            Ok(())
+        }
+        Err(e) => Err(e)
+    }
 }
 
