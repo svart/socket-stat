@@ -43,7 +43,6 @@ fn socket_state(state: u8) -> String {
     }
 }
 
-
 fn tcp_info_handler(tcp: TcpInfo) {
     print!(" cwnd: {}", tcp.snd_cwnd);
 
@@ -60,11 +59,7 @@ fn tcp_info_handler(tcp: TcpInfo) {
     print!(" delivery_rate: {}", speed_human(tcp.delivery_rate as f64 * 8.));
 }
 
-fn main() -> io::Result<()> {
-    let mut socket = Socket::new(NETLINK_SOCK_DIAG)?;
-    socket.bind_auto()?;
-    socket.connect(&SocketAddr::new(0, 0))?;
-
+fn prepare_request_buffer() -> Vec<u8> {
     let mut packet = NetlinkMessage {
         header: NetlinkHeader {
             flags: NLM_F_REQUEST | NLM_F_DUMP,
@@ -90,6 +85,15 @@ fn main() -> io::Result<()> {
     assert_eq!(buf.len(), packet.buffer_len());
 
     packet.serialize(&mut buf[..]);
+    buf
+}
+
+fn main() -> io::Result<()> {
+    let mut socket = Socket::new(NETLINK_SOCK_DIAG)?;
+    socket.bind_auto()?;
+    socket.connect(&SocketAddr::new(0, 0))?;
+
+    let buf = prepare_request_buffer();
 
     if let Err(e) = socket.send(&buf[..], 0) {
         panic!("Cannot send request: {}", e);
@@ -144,3 +148,4 @@ fn main() -> io::Result<()> {
     }
     Ok(())
 }
+
