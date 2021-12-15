@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 // SPDX-License-Identifier: MIT
 use std::io;
 
@@ -12,6 +13,23 @@ use netlink_packet_sock_diag::{
 use netlink_packet_sock_diag::inet::InetResponse;
 use netlink_packet_sock_diag::inet::nlas::{Nla, TcpInfo};
 use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr};
+
+struct DiagReq {
+    af: u8,
+    proto: u8,
+}
+
+impl Display for DiagReq {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match (self.af, self.proto) {
+            (AF_INET, IPPROTO_TCP) => write!(f, "tcp"),
+            (AF_INET6, IPPROTO_TCP) => write!(f, "tcp6"),
+            (AF_INET, IPPROTO_UDP) => write!(f, "udp"),
+            (AF_INET6, IPPROTO_UDP) => write!(f, "udp6"),
+            _ => write!(f, "unknown")
+        }
+    }
+}
 
 fn speed_human(speed: f64) -> String {
     if speed >= 1e12 {
@@ -44,13 +62,6 @@ fn socket_state(state: u8) -> String {
     }
 }
 
-fn display_af_proto(af: u8, proto: u8) -> String {
-    match (af, proto) {
-        (AF_INET, IPPROTO_TCP) => format!("tcp"),
-        (AF_INET, IPPROTO_UDP) => format!("udp"),
-        _ => format!("unknown")
-    }
-}
 
 fn tcp_info_handler(tcp: TcpInfo) {
     print!(" cwnd: {}", tcp.snd_cwnd);
@@ -68,14 +79,14 @@ fn tcp_info_handler(tcp: TcpInfo) {
     print!(" delivery_rate: {}", speed_human(tcp.delivery_rate as f64 * 8.));
 }
 
-fn process_netlink_responses(af: u8, proto: u8, responses: Vec<Box<InetResponse>>) {
+fn process_netlink_responses(req_type: &DiagReq, responses: Vec<Box<InetResponse>>) {
     for response in responses {
         let src_addr = response.header.socket_id.source_address;
         let src_port = response.header.socket_id.source_port;
         let dst_addr = response.header.socket_id.destination_address;
         let dst_port = response.header.socket_id.destination_port;
         print!("{} {}:{}-{}:{}",
-               display_af_proto(af, proto), src_addr, src_port, dst_addr, dst_port);
+               req_type, src_addr, src_port, dst_addr, dst_port);
 
         let state = response.header.state;
         print!(" {}", socket_state(state));
@@ -92,7 +103,7 @@ fn process_netlink_responses(af: u8, proto: u8, responses: Vec<Box<InetResponse>
     }
 }
 
-fn send_request(socket: &mut Socket, af: u8, proto: u8) -> io::Result<()>{
+fn send_request(socket: &mut Socket, req_type: &DiagReq) -> io::Result<()> {
     let mut packet = NetlinkMessage {
         header: NetlinkHeader {
             flags: NLM_F_REQUEST | NLM_F_DUMP,
@@ -100,8 +111,8 @@ fn send_request(socket: &mut Socket, af: u8, proto: u8) -> io::Result<()>{
             ..Default::default()
         },
         payload: SockDiagMessage::InetRequest(InetRequest {
-            family: af,
-            protocol: proto,
+            family: req_type.af,
+            protocol: req_type.proto,
             extensions: ExtensionFlags::all(),
             states: StateFlags::all(),
             socket_id: SocketId::new_v4(),
@@ -164,15 +175,17 @@ fn main() -> io::Result<()> {
     socket.connect(&SocketAddr::new(0, 0))?;
 
     let requests = [
-        (AF_INET, IPPROTO_TCP),
-        (AF_INET, IPPROTO_UDP)
+        DiagReq{af: AF_INET, proto: IPPROTO_TCP},
+        DiagReq{af: AF_INET6, proto: IPPROTO_TCP},
+        DiagReq{af: AF_INET, proto: IPPROTO_UDP},
+        DiagReq{af: AF_INET6, proto: IPPROTO_UDP},
     ];
 
-    for tuple in requests {
-        send_request(&mut socket, tuple.0, tuple.1)?;
+    for req_type in requests {
+        send_request(&mut socket, &req_type)?;
         match receive_response(&socket) {
             Ok(resp) => {
-                process_netlink_responses(tuple.0, tuple.1, resp);
+                process_netlink_responses(&req_type, resp);
             }
             Err(e) => return Err(e)
         }
