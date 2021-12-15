@@ -44,6 +44,14 @@ fn socket_state(state: u8) -> String {
     }
 }
 
+fn display_af_proto(af: u8, proto: u8) -> String {
+    match (af, proto) {
+        (AF_INET, IPPROTO_TCP) => format!("tcp"),
+        (AF_INET, IPPROTO_UDP) => format!("udp"),
+        _ => format!("unknown")
+    }
+}
+
 fn tcp_info_handler(tcp: TcpInfo) {
     print!(" cwnd: {}", tcp.snd_cwnd);
 
@@ -60,13 +68,14 @@ fn tcp_info_handler(tcp: TcpInfo) {
     print!(" delivery_rate: {}", speed_human(tcp.delivery_rate as f64 * 8.));
 }
 
-fn process_netlink_responses(responses: Vec<Box<InetResponse>>) {
+fn process_netlink_responses(af: u8, proto: u8, responses: Vec<Box<InetResponse>>) {
     for response in responses {
         let src_addr = response.header.socket_id.source_address;
         let src_port = response.header.socket_id.source_port;
         let dst_addr = response.header.socket_id.destination_address;
         let dst_port = response.header.socket_id.destination_port;
-        print!("{}:{}-{}:{}", src_addr, src_port, dst_addr, dst_port);
+        print!("{} {}:{}-{}:{}",
+               display_af_proto(af, proto), src_addr, src_port, dst_addr, dst_port);
 
         let state = response.header.state;
         print!(" {}", socket_state(state));
@@ -154,13 +163,20 @@ fn main() -> io::Result<()> {
     socket.bind_auto()?;
     socket.connect(&SocketAddr::new(0, 0))?;
 
-    send_request(&mut socket, AF_INET, IPPROTO_TCP)?;
-    match receive_response(&socket) {
-        Ok(resp) => {
-            process_netlink_responses(resp);
-            Ok(())
+    let requests = [
+        (AF_INET, IPPROTO_TCP),
+        (AF_INET, IPPROTO_UDP)
+    ];
+
+    for tuple in requests {
+        send_request(&mut socket, tuple.0, tuple.1)?;
+        match receive_response(&socket) {
+            Ok(resp) => {
+                process_netlink_responses(tuple.0, tuple.1, resp);
+            }
+            Err(e) => return Err(e)
         }
-        Err(e) => Err(e)
     }
+    Ok(())
 }
 
