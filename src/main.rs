@@ -5,15 +5,16 @@ use libc;
 
 use netlink_packet_sock_diag::{
     constants::*,
-    inet::{ExtensionFlags, InetRequest, SocketId, StateFlags},
+    inet::StateFlags as InetStateFlags,
+    inet::{ExtensionFlags, InetRequest,InetResponse, SocketId},
+    inet::nlas::{Nla, TcpInfo},
+    unix::StateFlags as UnixStateFlags,
+    unix::{ShowFlags, UnixRequest, UnixResponse},
     NetlinkHeader,
     NetlinkMessage,
     NetlinkPayload,
     SockDiagMessage,
 };
-use netlink_packet_sock_diag::inet::InetResponse;
-use netlink_packet_sock_diag::inet::nlas::{Nla, TcpInfo};
-use netlink_packet_sock_diag::unix::UnixResponse;
 use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr};
 
 struct DiagReq {
@@ -130,21 +131,33 @@ fn process_netlink_responses(req_type: &DiagReq, responses: Vec<SockDiagMessage>
 }
 
 fn send_request(socket: &mut Socket, req_type: &DiagReq) -> io::Result<()> {
+    let request_payload = match req_type.af {
+        AF_INET | AF_INET6 => {
+            SockDiagMessage::InetRequest(InetRequest {
+                family: req_type.af,
+                protocol: req_type.proto,
+                extensions: ExtensionFlags::all(),
+                states: InetStateFlags::all(),
+                socket_id: SocketId::new_v4(),
+            })
+        }
+        AF_UNIX => {
+            SockDiagMessage::UnixRequest(UnixRequest {
+                state_flags: UnixStateFlags::all(),
+                show_flags: ShowFlags::all(),
+                inode: 0,
+                cookie: [0; 8]
+            })
+        }
+        _ => panic!("Unknown address family")
+    };
     let mut packet = NetlinkMessage {
         header: NetlinkHeader {
             flags: NLM_F_REQUEST | NLM_F_DUMP,
             message_type: SOCK_DIAG_BY_FAMILY,
             ..Default::default()
         },
-        // TODO: send UnixRequest for unix sockets
-        payload: SockDiagMessage::InetRequest(InetRequest {
-            family: req_type.af,
-            protocol: req_type.proto,
-            extensions: ExtensionFlags::all(),
-            states: StateFlags::all(),
-            socket_id: SocketId::new_v4(),
-        })
-            .into(),
+        payload: request_payload.into(),
     };
 
     packet.finalize();
@@ -187,7 +200,6 @@ fn receive_response(socket: &Socket) -> io::Result<Vec<SockDiagMessage>> {
                     return Err(e.to_io());
                 }
                 NetlinkPayload::Overrun(_) | _ => {
-                    println!("responses = {}", responses.len());
                     return Err(io::Error::new(io::ErrorKind::Other, "unknown error"));
                 }
             }
