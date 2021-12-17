@@ -1,5 +1,5 @@
-use std::fmt::{Display, Formatter};
 // SPDX-License-Identifier: MIT
+use std::fmt::{Display, Formatter};
 use std::io;
 use libc;
 
@@ -69,7 +69,6 @@ fn socket_state(state: u8) -> String {
         _ => format!("unknown")
     }
 }
-
 
 fn tcp_info_handler(tcp: TcpInfo) {
     print!(" cwnd: {}", tcp.snd_cwnd);
@@ -250,4 +249,3 @@ fn main() -> io::Result<()> {
     }
     Ok(())
 }
-
