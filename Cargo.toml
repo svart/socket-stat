@@ -7,6 +7,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+libc = {version = "0.2"}
 netlink-packet-sock-diag = {path = "../netlink/netlink-packet-sock-diag", version = "0.2"}
 netlink-sys = {path = "../netlink/netlink-sys", version = "0.8"}
 netlink-packet-utils = {path = "../netlink/netlink-packet-utils", version = "0.4"}

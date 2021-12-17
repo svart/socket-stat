@@ -135,6 +135,7 @@ checksum = "1ecab6c735a6bb4139c0caafd0cc3635748bbb3acf4550e8138122099251f309"
 name = "socket-stats"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "netlink-packet-sock-diag",
  "netlink-packet-utils 0.4.1",
  "netlink-sys",

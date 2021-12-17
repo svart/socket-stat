@@ -1,6 +1,7 @@
 use std::fmt::{Display, Formatter};
 // SPDX-License-Identifier: MIT
 use std::io;
+use libc;
 
 use netlink_packet_sock_diag::{
     constants::*,
@@ -12,6 +13,7 @@ use netlink_packet_sock_diag::{
 };
 use netlink_packet_sock_diag::inet::InetResponse;
 use netlink_packet_sock_diag::inet::nlas::{Nla, TcpInfo};
+use netlink_packet_sock_diag::unix::UnixResponse;
 use netlink_sys::{protocols::NETLINK_SOCK_DIAG, Socket, SocketAddr};
 
 struct DiagReq {
@@ -26,6 +28,9 @@ impl Display for DiagReq {
             (AF_INET6, IPPROTO_TCP) => write!(f, "tcp6"),
             (AF_INET, IPPROTO_UDP) => write!(f, "udp"),
             (AF_INET6, IPPROTO_UDP) => write!(f, "udp6"),
+            (AF_INET, IPPROTO_RAW) => write!(f, "raw"),
+            (AF_INET6, IPPROTO_RAW) => write!(f, "raw6"),
+            (AF_UNIX, 0) => write!(f, "unix"),
             _ => write!(f, "unknown")
         }
     }
@@ -79,25 +84,46 @@ fn tcp_info_handler(tcp: TcpInfo) {
     print!(" delivery_rate: {}", speed_human(tcp.delivery_rate as f64 * 8.));
 }
 
-fn process_netlink_responses(req_type: &DiagReq, responses: Vec<Box<InetResponse>>) {
-    for response in responses {
-        let src_addr = response.header.socket_id.source_address;
-        let src_port = response.header.socket_id.source_port;
-        let dst_addr = response.header.socket_id.destination_address;
-        let dst_port = response.header.socket_id.destination_port;
-        print!("{} {}:{}-{}:{}",
-               req_type, src_addr, src_port, dst_addr, dst_port);
+fn process_inet_response(req_type: &DiagReq, response: InetResponse) {
+    let src_addr = response.header.socket_id.source_address;
+    let src_port = response.header.socket_id.source_port;
+    let dst_addr = response.header.socket_id.destination_address;
+    let dst_port = response.header.socket_id.destination_port;
+    print!("{} {}:{}-{}:{}",
+           req_type, src_addr, src_port, dst_addr, dst_port);
 
-        let state = response.header.state;
-        print!(" {}", socket_state(state));
+    let state = response.header.state;
+    print!(" {}", socket_state(state));
 
-        for nla in response.nlas {
-            match nla {
-                Nla::TcpInfo(tcp) => {
-                    tcp_info_handler(tcp);
-                }
-                _ => continue,
+    for nla in response.nlas {
+        match nla {
+            Nla::TcpInfo(tcp) => {
+                tcp_info_handler(tcp);
             }
+            _ => continue,
+        }
+    }
+}
+
+fn process_unix_response(response: UnixResponse) {
+    let kind = response.header.kind;
+    match kind {
+        SOCK_PACKET => print!("unix_seqpacket"),
+        SOCK_STREAM => print!("unix_stream"),
+        SOCK_DGRAM => print!("unix_dgram"),
+        _ => return
+    }
+
+    let state = response.header.state;
+    print!(" {}", socket_state(state));
+}
+
+fn process_netlink_responses(req_type: &DiagReq, responses: Vec<SockDiagMessage>) {
+    for response in responses {
+        match response {
+            SockDiagMessage::InetResponse(r) => process_inet_response(req_type, *r),
+            SockDiagMessage::UnixResponse(r) => process_unix_response(*r),
+            _ => continue
         }
         println!();
     }
@@ -110,6 +136,7 @@ fn send_request(socket: &mut Socket, req_type: &DiagReq) -> io::Result<()> {
             message_type: SOCK_DIAG_BY_FAMILY,
             ..Default::default()
         },
+        // TODO: send UnixRequest for unix sockets
         payload: SockDiagMessage::InetRequest(InetRequest {
             family: req_type.af,
             protocol: req_type.proto,
@@ -134,11 +161,13 @@ fn send_request(socket: &mut Socket, req_type: &DiagReq) -> io::Result<()> {
     Ok(())
 }
 
-fn receive_response(socket: &Socket) -> io::Result<Vec<Box<InetResponse>>> {
-    let mut receive_buffer = vec![0; 4096];
+fn receive_response(socket: &Socket) -> io::Result<Vec<SockDiagMessage>> {
+    let mut peek_buf = vec![0];
     let mut offset = 0;
-    let mut responses: Vec<Box<InetResponse>> = Vec::new();
-    while let Ok(size) = socket.recv(&mut &mut receive_buffer[..], 0) {
+    let mut responses: Vec<SockDiagMessage> = Vec::new();
+    while let Ok(size) = socket.recv(&mut &mut peek_buf[..], libc::MSG_PEEK | libc::MSG_TRUNC) {
+        let mut receive_buffer = vec![0; size];
+        socket.recv(&mut &mut receive_buffer[..], 0)?;
         loop {
             let bytes = &receive_buffer[offset..];
             let rx_packet = <NetlinkMessage<SockDiagMessage>>::deserialize(bytes).unwrap();
@@ -146,7 +175,10 @@ fn receive_response(socket: &Socket) -> io::Result<Vec<Box<InetResponse>>> {
             match rx_packet.payload {
                 NetlinkPayload::Noop | NetlinkPayload::Ack(_) => {}
                 NetlinkPayload::InnerMessage(SockDiagMessage::InetResponse(response)) => {
-                    responses.push(response);
+                    responses.push(SockDiagMessage::InetResponse(response));
+                }
+                NetlinkPayload::InnerMessage(SockDiagMessage::UnixResponse(response))=> {
+                    responses.push(SockDiagMessage::UnixResponse(response));
                 }
                 NetlinkPayload::Done => {
                     return Ok(responses);
@@ -155,6 +187,7 @@ fn receive_response(socket: &Socket) -> io::Result<Vec<Box<InetResponse>>> {
                     return Err(e.to_io());
                 }
                 NetlinkPayload::Overrun(_) | _ => {
+                    println!("responses = {}", responses.len());
                     return Err(io::Error::new(io::ErrorKind::Other, "unknown error"));
                 }
             }
@@ -179,6 +212,9 @@ fn main() -> io::Result<()> {
         DiagReq{af: AF_INET6, proto: IPPROTO_TCP},
         DiagReq{af: AF_INET, proto: IPPROTO_UDP},
         DiagReq{af: AF_INET6, proto: IPPROTO_UDP},
+        DiagReq{af: AF_INET, proto: IPPROTO_RAW},
+        DiagReq{af: AF_INET6, proto: IPPROTO_RAW},
+        DiagReq{af: AF_UNIX, proto: 0},
     ];
 
     for req_type in requests {
