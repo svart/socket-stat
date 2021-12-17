@@ -7,9 +7,11 @@ use netlink_packet_sock_diag::{
     constants::*,
     inet::StateFlags as InetStateFlags,
     inet::{ExtensionFlags, InetRequest,InetResponse, SocketId},
-    inet::nlas::{Nla, TcpInfo},
+    inet::nlas::Nla as InetNla,
+    inet::nlas::TcpInfo,
     unix::StateFlags as UnixStateFlags,
     unix::{ShowFlags, UnixRequest, UnixResponse},
+    unix::nlas::Nla as UnixNla,
     NetlinkHeader,
     NetlinkMessage,
     NetlinkPayload,
@@ -98,7 +100,7 @@ fn process_inet_response(req_type: &DiagReq, response: InetResponse) {
 
     for nla in response.nlas {
         match nla {
-            Nla::TcpInfo(tcp) => {
+            InetNla::TcpInfo(tcp) => {
                 tcp_info_handler(tcp);
             }
             _ => continue,
@@ -117,6 +119,14 @@ fn process_unix_response(response: UnixResponse) {
 
     let state = response.header.state;
     print!(" {}", socket_state(state));
+    for nla in response.nlas {
+        match nla {
+            UnixNla::Name(name) => {
+                print!(" path: {}", name);
+            }
+            _ => continue,
+        }
+    }
 }
 
 fn process_netlink_responses(req_type: &DiagReq, responses: Vec<SockDiagMessage>) {
